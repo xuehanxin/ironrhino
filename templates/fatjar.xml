@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<project name="fatjar" default="fatjar" basedir=".">
+
+	<property name="resilience4j.version" value="0.13.0" />
+	<property name="vavr.version" value="0.9.2" />
+	
+	<property name="micrometer.version" value="1.0.5" />
+	<property name="HdrHistogram.version" value="2.1.10" />
+	<property name="LatencyUtils.version" value="2.0.3" />
+	
+	<property name="opentracing.version" value="0.31.0" />
+	<property name="opentracing-apache-httpclient.version" value="0.1.0" />
+	<property name="opentracing-jdbc.version" value="0.0.7" />
+	<property name="opentracing-kafka.version" value="0.0.13" />
+	<property name="jaeger.version" value="0.31.0" />
+	<property name="thrift.version" value="0.11.0" />
+
+	<target name="fatjar">
+		<delete dir="target" />
+		<jar destfile="target/resilience4j-core-${resilience4j.version}.jar">
+			<zipfileset src="lib/resilience4j-core-${resilience4j.version}.jar" />
+			<zipfileset src="lib/vavr-${vavr.version}.jar" />
+		</jar>
+		<jar destfile="target/micrometer-core-${micrometer.version}.jar">
+			<zipfileset src="lib/micrometer-core-${micrometer.version}.jar" />
+			<zipfileset src="lib/HdrHistogram-${HdrHistogram.version}.jar" />
+			<zipfileset src="lib/LatencyUtils-${LatencyUtils.version}.jar" />
+		</jar>
+		<jar destfile="target/opentracing-all-${opentracing.version}.jar">
+			<zipfileset src="lib/opentracing-api-${opentracing.version}.jar" />
+			<zipfileset src="lib/opentracing-noop-${opentracing.version}.jar" />
+			<zipfileset src="lib/opentracing-util-${opentracing.version}.jar" />
+			<zipfileset src="lib/opentracing-apache-httpclient-${opentracing-apache-httpclient.version}.jar" />
+			<zipfileset src="lib/opentracing-jdbc-${opentracing-jdbc.version}.jar" />
+			<zipfileset src="lib/opentracing-kafka-client-${opentracing-kafka.version}.jar" />
+			<zipfileset src="lib/opentracing-kafka-spring-${opentracing-kafka.version}.jar" />
+		</jar>
+		<jar destfile="target/jaeger-all-${jaeger.version}.jar">
+			<zipfileset src="lib/jaeger-core-${jaeger.version}.jar" />
+			<zipfileset src="lib/jaeger-thrift-${jaeger.version}.jar" />
+			<zipfileset src="lib/libthrift-${thrift.version}.jar" />
+		</jar>
+	</target>
+
+</project>

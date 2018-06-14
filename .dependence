@@ -38,3 +38,5 @@
 +resilience4j-circuitbreaker
 +micrometer-core
 +micrometer-registry-influx
++opentracing-all<-ironrhino-remoting-common
++jaeger-all<-opentracing-all
