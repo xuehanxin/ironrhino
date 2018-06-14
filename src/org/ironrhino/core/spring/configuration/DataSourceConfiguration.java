@@ -1,9 +1,12 @@
 package org.ironrhino.core.spring.configuration;
 
+import java.util.Collections;
+
 import javax.sql.DataSource;
 
 import org.apache.commons.lang3.StringUtils;
 import org.ironrhino.core.jdbc.DatabaseProduct;
+import org.ironrhino.core.tracing.Tracing;
 import org.ironrhino.core.util.AppInfo;
 import org.ironrhino.core.util.AppInfo.Stage;
 import org.springframework.beans.factory.annotation.Value;
@@ -94,6 +97,16 @@ public class DataSourceConfiguration {
 		ds.setRegisterMbeans(registerMbeans);
 		ds.setPoolName("HikariPool-" + AppInfo.getAppName());
 		log.info("Using {} to connect {}", ds.getClass().getName(), ds.getJdbcUrl());
+		if (Tracing.isOpentracingPresent()) {
+			ds.setDriverClassName("io.opentracing.contrib.jdbc.TracingDriver");
+			String url = ds.getJdbcUrl();
+			if (url.startsWith("jdbc:"))
+				url = url.substring(5);
+			if (databaseProduct != null)
+				url = databaseProduct.appendJdbcUrlProperties(url,
+						Collections.singletonMap("traceWithActiveSpanOnly", "true"));
+			ds.setJdbcUrl("jdbc:tracing:" + url);
+		}
 		return ds;
 	}
 

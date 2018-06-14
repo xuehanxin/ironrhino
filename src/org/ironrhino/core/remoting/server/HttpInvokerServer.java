@@ -27,6 +27,7 @@ import org.ironrhino.core.remoting.serializer.HttpInvokerSerializers;
 import org.ironrhino.core.remoting.stats.ServiceStats;
 import org.ironrhino.core.servlet.AccessFilter;
 import org.ironrhino.core.servlet.ProxySupportHttpServletRequest;
+import org.ironrhino.core.tracing.Tracing;
 import org.ironrhino.core.util.ExceptionUtils;
 import org.ironrhino.core.util.JsonDesensitizer;
 import org.ironrhino.core.util.ThrowableFunction;
@@ -41,6 +42,11 @@ import org.springframework.remoting.support.RemoteInvocationResult;
 import org.springframework.util.concurrent.ListenableFuture;
 import org.springframework.web.HttpRequestHandler;
 
+import io.opentracing.Scope;
+import io.opentracing.Span;
+import io.opentracing.Tracer;
+import io.opentracing.tag.Tags;
+import io.opentracing.util.GlobalTracer;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -81,8 +87,15 @@ public class HttpInvokerServer implements HttpRequestHandler {
 			return;
 		}
 		invoke(request, response, req -> {
-			RemoteInvocation invocation = HttpInvokerSerializers.forRequest(req)
-					.readRemoteInvocation(req.getInputStream());
+			if (Tracing.isOpentracingPresent()) {
+				Tracer tracer = GlobalTracer.get();
+				Span span = tracer.buildSpan(interfaceName).start();
+				Tags.SPAN_KIND.set(span, Tags.SPAN_KIND_SERVER);
+				Tags.COMPONENT.set(span, "remoting");
+				tracer.scopeManager().activate(span, true);
+			}
+			RemoteInvocation invocation = Tracing.execute("readRemoteInvocation",
+					() -> HttpInvokerSerializers.forRequest(req).readRemoteInvocation(req.getInputStream()));
 			List<String> parameterTypeList = new ArrayList<>(invocation.getParameterTypes().length);
 			for (Class<?> cl : invocation.getParameterTypes())
 				parameterTypeList.add(cl.getSimpleName());
@@ -90,6 +103,11 @@ public class HttpInvokerServer implements HttpRequestHandler {
 					.append(String.join(",", parameterTypeList)).append(")").toString();
 			MDC.put(MDC_KEY_ROLE, "SERVER");
 			MDC.put(MDC_KEY_SERVICE, MDC.get(MDC_KEY_INTERFACE_NAME) + '.' + method);
+			if (Tracing.isOpentracingPresent()) {
+				Span span = GlobalTracer.get().activeSpan();
+				if (span != null)
+					span.setOperationName(MDC.get(MDC_KEY_SERVICE));
+			}
 			if (loggingPayload) {
 				Object[] args = invocation.getArguments();
 				remotingLogger.info("Request: {}", JsonDesensitizer.DEFAULT_INSTANCE
@@ -98,17 +116,24 @@ public class HttpInvokerServer implements HttpRequestHandler {
 			return invocation;
 		}, invocation -> {
 			try {
-				return createRemoteInvocationResult(request, invocation, invocation.invoke(target));
+				return Tracing.execute("invokeAndCreateResult",
+						() -> createRemoteInvocationResult(request, invocation, invocation.invoke(target)));
 			} catch (Throwable ex) {
 				if (ex instanceof InvocationTargetException) {
 					ex = new InvocationTargetException(
 							translateAndTrim(((InvocationTargetException) ex).getTargetException()));
 				}
+				Tracing.logError(ex);
 				log.error("Processing of " + MDC.get(MDC_KEY_INTERFACE_NAME) + " remote call resulted in exception",
 						ex instanceof InvocationTargetException ? ex.getCause() : ex);
 				return new RemoteInvocationResult(ex);
 			}
 		}, () -> {
+			if (Tracing.isOpentracingPresent()) {
+				Scope scope = GlobalTracer.get().scopeManager().active();
+				if (scope != null)
+					scope.close();
+			}
 			MDC.remove(MDC_KEY_INTERFACE_NAME);
 			MDC.remove(MDC_KEY_ROLE);
 			MDC.remove(MDC_KEY_SERVICE);
@@ -123,44 +148,74 @@ public class HttpInvokerServer implements HttpRequestHandler {
 		} else if (value instanceof Callable || value instanceof Future) {
 			AsyncContext context = request.startAsync();
 			Map<String, String> contextMap = MDC.getCopyOfContextMap();
-			if (value instanceof CompletableFuture) {
-				((CompletableFuture<?>) value).whenComplete((obj, e) -> {
-					RemoteInvocationResult asyncResult = new RemoteInvocationResult();
-					if (e == null) {
-						asyncResult.setValue(obj);
-					} else {
-						Throwable ex = e;
-						if (ex instanceof CompletionException) {
-							ex = translateAndTrim(e.getCause());
+			try (Scope scope = Tracing.isOpentracingPresent() ? GlobalTracer.get().buildSpan("async").startActive(false)
+					: null) {
+				Object span = scope != null ? scope.span() : null;
+				// generated lambda function use Span as captured parameter type
+				// NoClassDefFoundError could be thrown when perform Class.getDeclaredMethods()
+				if (value instanceof CompletableFuture) {
+					((CompletableFuture<?>) value).whenComplete((obj, e) -> {
+						try (Scope s = (span != null ? GlobalTracer.get().scopeManager().activate((Span) span, true)
+								: null)) {
+							RemoteInvocationResult asyncResult = new RemoteInvocationResult();
+							if (e == null) {
+								asyncResult.setValue(obj);
+							} else {
+								Throwable ex = e;
+								if (ex instanceof CompletionException) {
+									ex = translateAndTrim(e.getCause());
+								}
+								log.error("Processing of " + MDC.get(MDC_KEY_INTERFACE_NAME)
+										+ " remote call resulted in exception", ex);
+								Tracing.logError(ex);
+								asyncResult.setException(new InvocationTargetException(ex));
+							}
+							invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
 						}
-						log.error("Processing of " + MDC.get(MDC_KEY_INTERFACE_NAME)
-								+ " remote call resulted in exception", ex);
-						asyncResult.setException(new InvocationTargetException(ex));
-					}
-					invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
-				});
-			} else if (value instanceof ListenableFuture) {
-				((ListenableFuture<?>) value).addCallback(obj -> {
-					RemoteInvocationResult asyncResult = new RemoteInvocationResult();
-					asyncResult.setValue(obj);
-					invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
-				}, ex -> invokeWithAsyncResult(context, contextMap, invocation,
-						new RemoteInvocationResult(new InvocationTargetException(ex))));
-			} else {
-				context.start(() -> {
-					RemoteInvocationResult asyncResult = new RemoteInvocationResult();
-					try {
-						asyncResult.setValue(value instanceof Callable ? (((Callable<?>) value)).call()
-								: (((Future<?>) value)).get());
-					} catch (Throwable e) {
-						if (value instanceof Future && e instanceof ExecutionException)
-							e = translateAndTrim(e.getCause());
-						log.error("Processing of " + MDC.get(MDC_KEY_INTERFACE_NAME)
-								+ " remote call resulted in exception", e);
-						asyncResult.setException(new InvocationTargetException(e));
-					}
-					invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
-				});
+					});
+				} else if (value instanceof ListenableFuture) {
+					((ListenableFuture<?>) value).addCallback(obj -> {
+						try (Scope s = (span != null ? GlobalTracer.get().scopeManager().activate((Span) span, true)
+								: null)) {
+							RemoteInvocationResult asyncResult = new RemoteInvocationResult();
+							asyncResult.setValue(obj);
+							invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
+						}
+					}, ex -> {
+						try (Scope s = (span != null ? GlobalTracer.get().scopeManager().activate((Span) span, true)
+								: null)) {
+							Tracing.logError(ex);
+							invokeWithAsyncResult(context, contextMap, invocation,
+									new RemoteInvocationResult(new InvocationTargetException(ex)));
+						}
+					});
+				} else {
+					context.start(() -> {
+						RemoteInvocationResult asyncResult = new RemoteInvocationResult();
+						try (Scope s = (span != null ? GlobalTracer.get().scopeManager().activate((Span) span, true)
+								: null)) {
+							Scope sc = (s != null
+									? GlobalTracer.get().scopeManager().activate(
+											GlobalTracer.get().buildSpan("invokeAndCreateResult").start(), true)
+									: null);
+							try {
+								asyncResult.setValue(value instanceof Callable ? (((Callable<?>) value)).call()
+										: (((Future<?>) value)).get());
+							} catch (Throwable e) {
+								if (value instanceof Future && e instanceof ExecutionException)
+									e = translateAndTrim(e.getCause());
+								log.error("Processing of " + MDC.get(MDC_KEY_INTERFACE_NAME)
+										+ " remote call resulted in exception", e);
+								Tracing.logError(e);
+								asyncResult.setException(new InvocationTargetException(e));
+							} finally {
+								if (sc != null)
+									sc.close();
+							}
+							invokeWithAsyncResult(context, contextMap, invocation, asyncResult);
+						}
+					});
+				}
 			}
 			return null;
 		}
@@ -205,15 +260,19 @@ public class HttpInvokerServer implements HttpRequestHandler {
 				}
 			}
 			remotingLogger.info("Invoked from {} in {}ms", MDC.get(AccessFilter.MDC_KEY_REQUEST_FROM), time);
-			HttpInvokerSerializer serializer = HttpInvokerSerializers.forRequest(request);
-			response.setContentType(serializer.getContentType());
-			serializer.writeRemoteInvocationResult(invocation, result, response.getOutputStream());
+			Tracing.execute("writeRemoteInvocationResult", () -> {
+				HttpInvokerSerializer serializer = HttpInvokerSerializers.forRequest(request);
+				response.setContentType(serializer.getContentType());
+				serializer.writeRemoteInvocationResult(invocation, result, response.getOutputStream());
+				return null;
+			});
 		} catch (SerializationFailedException sfe) {
 			log.error(sfe.getMessage(), sfe);
 			response.setHeader(RemotingContext.HTTP_HEADER_EXCEPTION_MESSAGE, sfe.getMessage());
 			response.setStatus(RemotingContext.SC_SERIALIZATION_FAILED);
 		} catch (Exception ex) {
 			log.error(ex.getMessage(), ex);
+			Tracing.logError(ex);
 			response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);
 		} finally {
 			completion.run();

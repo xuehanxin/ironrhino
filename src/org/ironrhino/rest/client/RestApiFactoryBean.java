@@ -21,6 +21,7 @@ import org.aopalliance.intercept.MethodInvocation;
 import org.apache.commons.lang3.StringUtils;
 import org.ironrhino.core.spring.FallbackSupportMethodInterceptorFactoryBean;
 import org.ironrhino.core.throttle.CircuitBreaking;
+import org.ironrhino.core.tracing.Tracing;
 import org.ironrhino.core.util.ReflectionUtils;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.beans.BeanWrapperImpl;
@@ -112,7 +113,8 @@ public class RestApiFactoryBean extends FallbackSupportMethodInterceptorFactoryB
 	@Override
 	protected Object doInvoke(MethodInvocation methodInvocation) throws Exception {
 		return CircuitBreaking.execute(restApiClass.getName(), ex -> ex.getCause() instanceof IOException,
-				() -> actualInvoke(methodInvocation));
+					() -> Tracing.execute(ReflectionUtils.stringify(methodInvocation.getMethod()),
+							() -> actualInvoke(methodInvocation), "span.kind", "client", "component", "rest"));
 	}
 
 	@SuppressWarnings("unchecked")

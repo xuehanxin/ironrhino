@@ -8,6 +8,8 @@ import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.ironrhino.core.aop.BaseAspect;
+import org.ironrhino.core.tracing.Tracing;
+import org.ironrhino.core.util.ReflectionUtils;
 import org.springframework.stereotype.Component;
 
 import io.micrometer.core.instrument.Metrics;
@@ -24,11 +26,13 @@ public class FileStorageInstrumentation extends BaseAspect {
 		if (methodName.startsWith("get") || methodName.startsWith("is"))
 			return pjp.proceed();
 		if (!org.ironrhino.core.metrics.Metrics.isMicrometerPresent())
-			return pjp.proceed();
+			return Tracing.executeThrowableCallable(ReflectionUtils.stringify(method), pjp::proceed, "name",
+					fileStorage.getName());
 		boolean error = false;
 		long start = System.nanoTime();
 		try {
-			Object result = pjp.proceed();
+			Object result = Tracing.executeThrowableCallable(ReflectionUtils.stringify(method), pjp::proceed, "name",
+					fileStorage.getName());
 			if (methodName.equals("write") && args.length > 2 && args[2] instanceof Long) {
 				Metrics.summary("fs.write.size", "name", fileStorage.getName()).record((Long) args[2]);
 			}
