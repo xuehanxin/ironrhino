@@ -40,7 +40,7 @@ public abstract class AbstractPollingControl<T extends BasePollingEntity> {
 	protected Logger logger = LoggerFactory.getLogger(getClass());
 
 	@Autowired
-	protected EntityManager<T> entityManager;
+	protected EntityManager<String, T> entityManager;
 
 	@Autowired
 	private LockService lockService;

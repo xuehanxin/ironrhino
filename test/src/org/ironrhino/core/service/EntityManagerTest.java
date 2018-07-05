@@ -46,7 +46,7 @@ import lombok.Data;
 public class EntityManagerTest {
 
 	@Autowired
-	private EntityManager<Person> entityManager;
+	private EntityManager<String, Person> entityManager;
 
 	@Test
 	public void testCrud() {

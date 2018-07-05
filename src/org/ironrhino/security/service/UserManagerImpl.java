@@ -30,7 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @Order(0)
-public class UserManagerImpl extends BaseManagerImpl<User> implements UserManager {
+public class UserManagerImpl extends BaseManagerImpl<String, User> implements UserManager {
 
 	private static final String CACHE_NAMESPACE = "user";
 
